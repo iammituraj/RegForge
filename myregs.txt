@@ -1,0 +1,63 @@
+#START_ADDRSPACE
+addr_width = 16
+
+#START_REGS
+
+// Error status register
+reg = error_STS
+offset = 0xFFFC
+desc = Error Status Register
+
+field = sts_fsm_err0
+idx = [15:0]
+swacc = RW
+hwacc = W
+desc = FSM error status 0
+hwctl=net
+rstval = na
+swevt=na
+
+field = STS_fsm_err0
+idx = [24:17]
+rstval = 0x0
+swacc = RW
+hwacc = RW
+hwctl = net
+swevt = wtrig
+
+field = fsm_err3
+idx =  [16:16]
+rstval = 0x0
+swacc = RW
+hwacc = na
+hwctl = na
+swevt=w0trig
+
+field = fsm_err2
+idx =  [31:25]
+rstval = 0x0
+swacc = RW
+hwacc = na
+hwctl = na
+swevt=w0trig
+
+// Error control register
+reg = error_ctl
+offset = 0xFFF4
+
+field = ctl_fsm_err
+swacc = W
+hwacc = NA
+idx = [7:0]
+rstval = 0x0
+hwctl = set
+swevt=wtrig
+
+// Error set register
+reg = error_sts
+desc = Error Set Register
+field = ctl_fsm_err
+idx = [7:0]
+rstval = 0x0
+swacc = NA
+hwacc = NA
