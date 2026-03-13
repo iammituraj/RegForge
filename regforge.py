@@ -521,7 +521,7 @@ def validate_regdb():
 
             ## Validate hwacc, swacc combination ##
             if (swacc, hwacc) not in VALID_HWSWACC_COMBINATIONS:
-                print(f"ERROR (line {lineno}): Invalid swacc/hwacc combination: 'swacc={swacc}, hwacc={hwacc}' at field {field_name} in register {reg_name}")
+                print(f"ERROR (line {field['lineno']}): Invalid swacc/hwacc combination: 'swacc={swacc}, hwacc={hwacc}' at field {field_name} in register {reg_name}")
                 sys.exit(1)
 
             ## Validate hwctl in mandatory cases & override with default value in optional cases ##
@@ -546,17 +546,20 @@ def validate_regdb():
             else:
                 if "swevt" not in field:
                     field["swevt"] = "na"
-                elif swacc == "na" and hwacc == "na":  # RSVD fields cannot support swevt
+                elif (swacc == "na" and hwacc == "na") or (swacc == "w1pul") :  # RSVD, W1PUL fields cannot support swevt
                     field["swevt"] = "na"
 
             ## Validate rstval in mandatory cases & override with default value in optional cases ##
             if swacc == "r" and (hwacc == "w" or hwacc == "rw") and hwctl == "net": # ROW, RO+
                 field["rstval"] = "na"
+            elif swacc == "r" and (hwacc == "na" or hwacc == "r") and ("rstval" in field and field["rstval"] == "na"):
+                print(f"ERROR (line {field['lineno']}): Field '{field_name}' in register '{reg_name}' should have a valid reset value at 'rstval'")
+                sys.exit(1)
             elif swacc == "na" or swacc == "na":  # RSVD
                 field["rstval"] = "na"
             elif swacc == "w" and hwacc == "na":  # WO
                 field["rstval"] = "na"
-            elif swacc == "w1pul" and hwacc == "r": # W1PUL
+            elif swacc == "w1pul": # W1PUL
                 field["rstval"] = f"{width}'h0"
             elif "rstval" not in field:  # In all other cases of swacc, hwacc, hwctl it is mandatory to have rstval
                 print(f"ERROR (line {field['lineno']}): Field '{field_name}' in register '{reg_name}' missing mandatory parameter 'rstval'")
@@ -573,6 +576,53 @@ def validate_regdb():
 
     # Display reg addr space
     DEBUG_MODE and disp_reg_addr_table()
+
+# Add implementation information against each field in the DB
+# Implementation can be- flop, constnet (constant net), hwnet (HW driven), na (no driver)
+# Add IO ports associated with each field
+def add_impl_regdb():
+    # Global vars
+    global reg_db
+
+    # Iterate through each register in the DB
+    for reg_name, reg in reg_db.items():
+        # Iterate through each field in the register
+        for field_name, field in reg["fields"].items():
+            # Extract params of the field
+            swacc = field["swacc"]
+            hwacc = field["hwacc"]
+            hwctl = field["hwctl"]
+            swevt = field["swevt"]
+
+            # Add implementation to the DB
+            if swacc == "r" and (hwacc == "na" or hwacc == "r"): # RO, ROR
+                field["impl"] = "constnet"
+            elif swacc == "r" and (hwacc == "w" or hwacc == "rw") and hwctl == "net": # ROW, RO+
+                field["impl"] = "hwnet"
+            elif hwacc == "na" and (swacc == "na" or swacc == "w"): # RSVD, WO
+                field["impl"] = "na"
+            else:
+                field["impl"] = "flop"
+
+            # Add I/P ports to the DB
+            field["in_ports"] = []
+            # Only if the field has HW write access, it needs input ports = driven by HW
+            if hwacc == "w" or hwacc == "rw":
+                if hwctl == "net" or hwctl == "wen":
+                    field["in_ports"].append(f"{reg_name}_{field_name}")
+                if hwctl != "net":
+                    field["in_ports"].append(f"{reg_name}_{field_name}_{hwctl}")
+
+            # Add O/P ports to the DB
+            field["out_ports"] = []
+            # Only if the field as HW read access, it needs output port to drive HW
+            if swacc == "w1pul":
+                field["out_ports"].append(f"{reg_name}_{field_name}_w1pul")
+            elif hwacc == "r" or hwacc == "rw":
+                field["out_ports"].append(f"{reg_name}_{field_name}")
+            # If the field has an associated SW event, it needs output port to drive HW
+            if swevt != "na":
+                field["out_ports"].append(f"{reg_name}_{field_name}_{swevt}")
 
 # Display register database
 def disp_regdb():
@@ -790,6 +840,7 @@ def main():
     # Validate register database
     print(f"**Validating register database**")
     validate_regdb()
+    add_impl_regdb()
     DEBUG_MODE and disp_regdb()
 
 if __name__ == "__main__":
