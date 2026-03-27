@@ -28,6 +28,8 @@
 #### Libraries ####
 import sys
 import os
+from datetime import datetime;
+#timestr = f"Run time: {datetime.now():%Y-%m-%d %H:%M:%S}"
 
 #### User-defined Functions ####
 # Display usage syntax
@@ -47,6 +49,8 @@ def verify_regfile_struct(infile):
     global max_reg_addr
     global max_regs
     global reg_cnt
+    global mdlname
+    global outfile
     
     # Local vars
     start_addrspace_cnt = 0
@@ -55,6 +59,7 @@ def verify_regfile_struct(infile):
     is_regs_present = False
     is_atleast_one_reg_present = False
     is_addr_width_present = False
+    is_mdlname_present = False
 
     # Analyze line-by-line
     with open(infile, "r") as f:
@@ -109,6 +114,12 @@ def verify_regfile_struct(infile):
                         except ValueError:
                             print("ERROR: addr_width must be in the range [2, 32]")
                             sys.exit(1)
+                    # Parse mdlname
+                    if param == "mdlname":
+                        is_mdlname_present = True  
+                        mdlname = val  
+                        outfile = val + ".sv"
+                        DEBUG_MODE and print(f"Output file = {outfile}\n")
             
             # Verify if atleast one register is present
             if is_addrspace_present and is_regs_present:
@@ -120,7 +131,7 @@ def verify_regfile_struct(infile):
     
     # Verify the regfile skeltal structure
     # 1. Labels START_ADDRSPACE, START_REGS defined?
-    # 2. addr_width param defined?
+    # 2. addr_width, mdlname params defined?
     # 3. Atleast one register defined?
     # 4. Register count must be within the address space boundaries
     if start_addrspace_cnt != 1:
@@ -130,7 +141,10 @@ def verify_regfile_struct(infile):
         print("ERROR: File must contain exactly one #START_REGS label")
         sys.exit(1)
     if not is_addr_width_present:
-        print("ERROR: File missing the parameter addr_width")
+        print("ERROR: File missing the mandatory parameter 'addr_width'")
+        sys.exit(1)
+    if not is_mdlname_present:
+        print("ERROR: File missing the mandatory parameter 'mdlname'")
         sys.exit(1)
     if not is_atleast_one_reg_present :
         print("ERROR: File has no registers, atleast one register must be defined")
@@ -550,7 +564,7 @@ def validate_regdb():
                     field["swevt"] = "na"
 
             ## Validate rstval in mandatory cases & override with default value in optional cases ##
-            if swacc == "r" and (hwacc == "w" or hwacc == "rw") and hwctl == "net": # ROW, RO+
+            if swacc == "r" and (hwacc == "w" or hwacc == "rw") and field["hwctl"] == "net": # ROW, RO+
                 field["rstval"] = "na"
             elif swacc == "r" and (hwacc == "na" or hwacc == "r") and ("rstval" in field and field["rstval"] == "na"):
                 print(f"ERROR (line {field['lineno']}): Field '{field_name}' in register '{reg_name}' should have a valid reset value at 'rstval'")
@@ -579,10 +593,13 @@ def validate_regdb():
 
 # Add implementation information against each field in the DB
 # Implementation can be- flop, constnet (constant net), hwnet (HW driven), na (no driver)
-# Add IO ports associated with each field
+# Add HW controll IO ports associated with each field
+# Add bitmap of each register
 def add_impl_regdb():
     # Global vars
     global reg_db
+    global hw_if_inputs
+    global hw_if_outputs
 
     # Iterate through each register in the DB
     for reg_name, reg in reg_db.items():
@@ -604,25 +621,94 @@ def add_impl_regdb():
             else:
                 field["impl"] = "flop"
 
-            # Add I/P ports to the DB
+            # Add HW I/P ports and their widths to the DB
             field["in_ports"] = []
+            field["in_ports_w"] = []
             # Only if the field has HW write access, it needs input ports = driven by HW
             if hwacc == "w" or hwacc == "rw":
+                hw_if_inputs = True
                 if hwctl == "net" or hwctl == "wen":
-                    field["in_ports"].append(f"{reg_name}_{field_name}")
+                    field["in_ports"].append(f"i_{reg_name}_{field_name}")
+                    field["in_ports_w"].append(field["width"])
                 if hwctl != "net":
-                    field["in_ports"].append(f"{reg_name}_{field_name}_{hwctl}")
+                    field["in_ports"].append(f"i_{reg_name}_{field_name}_{hwctl}")
+                    if hwctl == "set" or hwctl == "clr" or hwctl == "tog" or hwctl == "wen":  # Field wise hwctl
+                        field["in_ports_w"].append(1)
+                    else:  # Bitwise hwctl
+                        field["in_ports_w"].append(field["width"])
 
-            # Add O/P ports to the DB
+            # Add HW O/P ports and their widths to the DB
             field["out_ports"] = []
-            # Only if the field as HW read access, it needs output port to drive HW
+            field["out_ports_w"] = []
+            # Only if the field as HW read access or if it's w1pul type, it needs output port to drive HW
             if swacc == "w1pul":
-                field["out_ports"].append(f"{reg_name}_{field_name}_w1pul")
+                field["out_ports"].append(f"o_{reg_name}_{field_name}_w1pul")
+                field["out_ports_w"].append(1)
+                hw_if_outputs = True
             elif hwacc == "r" or hwacc == "rw":
-                field["out_ports"].append(f"{reg_name}_{field_name}")
+                field["out_ports"].append(f"o_{reg_name}_{field_name}")
+                field["out_ports_w"].append(field["width"])
+                hw_if_outputs = True
             # If the field has an associated SW event, it needs output port to drive HW
             if swevt != "na":
-                field["out_ports"].append(f"{reg_name}_{field_name}_{swevt}")
+                hw_if_outputs = True
+                field["out_ports"].append(f"o_{reg_name}_{field_name}_{swevt}")
+                if swevt == "wtrig" or swevt == "rtrig":  # Field wise swevt
+                    field["out_ports_w"].append(1)
+                elif swevt == "w1trig" or swevt == "w0trig":  # Bitwise swevt
+                    field["out_ports_w"].append(field["width"])
+
+
+    ## Add bitmap of each register to the DB ##
+    # Iterate through each register
+    for reg_name, reg in reg_db.items():
+        maxidx = REG_WIDTH - 1
+        is_reg_resolved = False
+
+        # Start bitmap
+        reg["bitmap"] = ""
+        reg["bitmap"] += "{"
+
+        # Loop until all the bits in the register are resolved
+        while is_reg_resolved == False:
+            # Iterate through each field and find the field with the next biggest index
+            idx = 0
+            field_found = False
+            for field_name, field in reg["fields"].items(): 
+                fidx = field["idx"]
+                fwidth = field["width"]
+                fidxmsb = int(fidx[1:-1].split(":")[0])
+                if fidxmsb >= idx and fidxmsb <= maxidx:
+                    field_found = True
+                    curr_fname  = field_name
+                    curr_fwidth = fwidth
+                    idx = fidxmsb
+            if field_found:
+                # Find zero padding bits required
+                zpw = maxidx - idx
+                if zpw > 0:
+                    reg["bitmap"] += f"{zpw}'h0, "
+                # Calculate next possible biggest index
+                maxidx = idx - curr_fwidth
+                if maxidx == -1:
+                    reg["bitmap"] += f"r_{reg_name}_{curr_fname}"
+                    is_reg_resolved = True
+                else:
+                    reg["bitmap"] += f"r_{reg_name}_{curr_fname}, "
+            else:
+                # Find zero padding bits required
+                zpw = maxidx - idx + 1
+                maxidx = -1
+                reg["bitmap"] += f"{zpw}'h0"
+                is_reg_resolved = True
+
+        # Finish bitmap     
+        reg["bitmap"] += "}"
+
+# Hex to Verilog Hex literal
+def hex2verhex(val, size):
+    digits = size // 4
+    return f"{size}'h{val:0{digits}X}"
 
 # Display register database
 def disp_regdb():
@@ -670,6 +756,107 @@ def disp_reg_addr_table():
         print(f"{hex(int(offset)):10} : {reg_name}")
 
     print("\n==========================================\n")
+
+####  SV FILE GENERATION FUNCTIONS ###
+# Print Header
+def fprint_header(f, mdlname):
+    f.write(f"// Module name   : {mdlname}\n")
+    f.write(f"// Description   : Regblock with APB IF\n")
+    f.write(f"// Date          : {datetime.now():%Y-%m-%d %H:%M:%S}\n\n")
+
+# Format signal/port width
+def fmt_width(w, vec=False):
+    if not w or w <= 0:
+        return ""
+    if w == 1:
+        return "[0:0]" if vec else ""
+    return f"[{w-1}:0]"
+
+# Print IO port
+def fprint_port(f, direction, width, name, comment="", delim=",", indent=3, pad_width=7):
+    width_str = fmt_width(width)
+    indent_str = " " * indent
+    line = f"{indent_str}{direction:<6} logic {width_str:>{pad_width}} {name}"
+    if delim:
+        line += delim
+    if comment:
+        line += "  // " + comment
+    f.write(line + "\n")
+
+# Print HW input/output ports
+def fprint_hw_if_ios(f, direction, hw_if_ports):
+    if direction == "input":
+        fname   = "in_ports"
+        fname_w = "in_ports_w"
+        if hw_if_outputs_cnt > 0:
+            last_delim = ","
+    else:
+        fname = "out_ports"
+        fname_w = "out_ports_w"
+        last_delim = ""
+
+    # Iterate through register fields and print
+    pcount = 0
+    for reg_name, reg in reg_db.items():
+        is_reg_empty = True
+        for field_name, field in reg["fields"].items():
+            ports  = field.get(fname, [])
+            widths = field.get(fname_w, [])
+            for i, port in enumerate(ports):
+                width = widths[i] if i < len(widths) else None
+                # Insert newline BEFORE starting a new reg
+                if is_reg_empty:
+                    f.write("\n")
+                is_reg_empty = False
+                pcount += 1
+                # Derive the delimiter to use
+                delim = "," if pcount < hw_if_ports else last_delim
+                # Print the port
+                fprint_port(f, direction, width, port, delim=delim)
+
+# Print module and IOs to SV file
+def fprint_module_ios(f, mdlname):
+    # Global vars
+    global hw_if_inputs_cnt
+    global hw_if_outputs_cnt
+
+    f.write(f"// Module definition\n")
+    f.write(f"module {mdlname} (\n")
+    f.write(f"   //========== Clocks & Resets ==========//\n")
+    fprint_port(f, "input", 1, "clk")
+    fprint_port(f, "input", 1, "resetn", comment="Async active-low")  # Only active-low reset is supported
+    f.write(f"\n")
+    f.write(f"   //========== APB Interface ==========//\n")
+    fprint_port(f, "input",  addr_width,  "i_paddr")
+    fprint_port(f, "input",  1, "i_psel")
+    fprint_port(f, "input",  1, "i_penable")
+    fprint_port(f, "input",  1, "i_pwrite")
+    fprint_port(f, "input", REG_WIDTH, "i_pwdata")
+    fprint_port(f, "input", STRB_WIDTH, "i_pstrb")
+    fprint_port(f, "output", REG_WIDTH, "o_prdata")
+    if hw_if_inputs or hw_if_outputs:
+        fprint_port(f, "output", 1, "o_pready")
+        f.write("\n")
+        f.write("   //========== HW Interface ==========//\n")
+        for reg in reg_db.values():
+            for field in reg["fields"].values():
+                hw_if_inputs_cnt  += len(field.get("in_ports", []))
+                hw_if_outputs_cnt += len(field.get("out_ports", []))
+    else:
+        print_port(f, "output", 1, "o_pready", delim="")
+
+    # Print HW inputs
+    if hw_if_inputs:
+        f.write("\n   // HW Inputs  //\n")
+        fprint_hw_if_ios(f, "input", hw_if_inputs_cnt)
+
+    # Print HW outputs
+    if hw_if_outputs:
+        f.write("\n   // HW Outputs //\n")
+        fprint_hw_if_ios(f, "output", hw_if_outputs_cnt)
+
+    # END
+    f.write(f");")
 
 #### CONSTANTS ####
 MIN_ADDR_WIDTH = 2
@@ -724,6 +911,9 @@ VALID_HWCTL_ARGS = [
     "tog",
     "wen",
     "net",
+    "setb",
+    "clrb",
+    "togb",
     "na"
 ]
 # Valid swevt args
@@ -770,11 +960,13 @@ VALID_HWSWACC_COMBINATIONS = [
     ("rset", "rw")
 ]
 
-#### Configurable ####
+############################ Configurable ##################################
 DEBUG_MODE   = 1                # 1 - Enable debug messages
 DEFAULT_DESC = ""               # Default reg/field descriptions
 RST_TYPE     = ASYNC_LOW_RST    # APB reset
-SUFFIX_OFILE = "_apb_top.sv"    # SV file suffix
+SUFFIX_OFILE = "_apb_top"    # SV file suffix
+EN_BRANDING  = 1  # 0 - to disable RegForge branding in generated SV files
+############################################################################
 
 #### Global PARAMs ####
 base_addr = 0x0
@@ -786,6 +978,11 @@ addr_width_hexdigits = None
 reg_cnt = 0
 reg_db = {}
 reg_addr_table = {}
+mdlname = None
+hw_if_inputs = False
+hw_if_outputs = False
+hw_if_inputs_cnt = 0
+hw_if_outputs_cnt = 0
 
 #### MAIN ####
 def main():
@@ -803,10 +1000,6 @@ def main():
         usage()
         sys.exit(1)
 
-    # Generate outfile name
-    base = os.path.splitext(infile)[0]
-    outfile = base + SUFFIX_OFILE
-    
     # Welcome messages
     print('    ____             ______                    ')
     print('   / __ \\___  ____ _/ ____/___  _________ ____ ')
@@ -815,7 +1008,6 @@ def main():
     print('/_/ |_|\\___/\\__, /_/    \\____/_/   \\__, /\\___/ ')
     print('           /____/                 /____/       ')    
     print(f"Input file : {infile}")
-    print(f"Output file: {outfile}")
 
     # Verify the regfile structure
     print("\nVerifying the regfile structure...\n")
@@ -842,6 +1034,19 @@ def main():
     validate_regdb()
     add_impl_regdb()
     DEBUG_MODE and disp_regdb()
+
+    # Create SV file and print default content to it
+    outfile = f"{mdlname}{SUFFIX_OFILE}.sv"
+    try:
+        with open(outfile, "w") as f:
+            if EN_BRANDING:
+                f.write(f"// Generated by RegForge //\n")
+                f.write(f"// Try RegForge here - https://github.com/iammituraj/RegForge\n\n")
+            fprint_header(f, mdlname)
+            fprint_module_ios(f, mdlname)
+    except Exception as e:
+        print(f"ERROR: Could not create file: {outfile} successfully :(")
+        print(e)
 
 if __name__ == "__main__":
     main()
