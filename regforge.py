@@ -14,7 +14,7 @@
 #                    The input is a plain text file (regfile) that describes registers with access rules.
 #                    The output is the register block in RTL (described in SV) with APB interface.
 #
-# Last modified on : Mar-2026
+# Last modified on : Apr-2026
 # Compatiblility   : Python 3.9 tested
 # Notes            : Usage- regforge.py <regfile>
 #                    eg: regforge.py uart_regs.txt
@@ -235,16 +235,24 @@ def validate_rstval(val, curr_reg, curr_field, lineno):
 # │   ├── offset      : int               # Register offset from base address
 # │   ├── lineno      : int               # Line number of reg in regfile
 # │   ├── desc        : str               # Register description
+# │   ├── bitmap      : str               # Register bit map
 # │   │
 # │   └── fields                          # Dictionary of fields in the register
 # │       ├── <field_name>                # Example: "tx_ready"
-# │       │   ├── idx    : int            # Starting bit index of field
-# │       │   ├── width  : int            # Field width in bits
-# │       │   ├── swacc  : str            # Software access type
-# │       │   ├── hwacc  : str            # Hardware access type
-# │       │   ├── rstval : str            # Reset value (example: "1'h0")
-# │       │   ├── desc   : str            # Field description
-# │       │   └── lineno : int            # Line number of field in regfile
+# │       │   ├── idx         : int       # Starting bit index of field
+# │       │   ├── width       : int       # Field width in bits
+# │       │   ├── swacc       : str       # Software access type
+# │       │   ├── hwacc       : str       # Hardware access type
+# │       │   ├── rstval      : str       # Reset value (example: "1'h0")
+# │       │   ├── desc        : str       # Field description
+# │       │   └── lineno      : int       # Line number of field in regfile
+# │       │   └── hwctl       : str       # HW control
+# │       │   └── swevt       : str       # SW event
+# │       │   └── impl        : str       # Implementation in Hardware
+# │       │   └── in_ports    : str arr   # Associated input ports
+# │       │   └── in_ports_w  : int arr   # Input ports width
+# │       │   └── out_ports   : str arr   # Associated output ports
+# │       │   └── out_ports_w : int arr   # Output ports width
 # │       │
 # │       └── <field_name>
 # │           └── ...
@@ -628,10 +636,10 @@ def add_impl_regdb():
             if hwacc == "w" or hwacc == "rw":
                 hw_if_inputs = True
                 if hwctl == "net" or hwctl == "wen":
-                    field["in_ports"].append(f"i_{reg_name}_{field_name}")
+                    field["in_ports"].append(f"{reg_name}_{field_name}")
                     field["in_ports_w"].append(field["width"])
                 if hwctl != "net":
-                    field["in_ports"].append(f"i_{reg_name}_{field_name}_{hwctl}")
+                    field["in_ports"].append(f"{reg_name}_{field_name}_{hwctl}")
                     if hwctl == "set" or hwctl == "clr" or hwctl == "tog" or hwctl == "wen":  # Field wise hwctl
                         field["in_ports_w"].append(1)
                     else:  # Bitwise hwctl
@@ -642,17 +650,17 @@ def add_impl_regdb():
             field["out_ports_w"] = []
             # Only if the field as HW read access or if it's w1pul type, it needs output port to drive HW
             if swacc == "w1pul":
-                field["out_ports"].append(f"o_{reg_name}_{field_name}_w1pul")
-                field["out_ports_w"].append(1)
+                field["out_ports"].append(f"{reg_name}_{field_name}")  # Bitwise w1pul
+                field["out_ports_w"].append(field["width"])
                 hw_if_outputs = True
             elif hwacc == "r" or hwacc == "rw":
-                field["out_ports"].append(f"o_{reg_name}_{field_name}")
+                field["out_ports"].append(f"{reg_name}_{field_name}")
                 field["out_ports_w"].append(field["width"])
                 hw_if_outputs = True
             # If the field has an associated SW event, it needs output port to drive HW
             if swevt != "na":
                 hw_if_outputs = True
-                field["out_ports"].append(f"o_{reg_name}_{field_name}_{swevt}")
+                field["out_ports"].append(f"{reg_name}_{field_name}_{swevt}")
                 if swevt == "wtrig" or swevt == "rtrig":  # Field wise swevt
                     field["out_ports_w"].append(1)
                 elif swevt == "w1trig" or swevt == "w0trig":  # Bitwise swevt
@@ -764,6 +772,13 @@ def fprint_header(f, mdlname):
     f.write(f"// Description   : Regblock with APB IF\n")
     f.write(f"// Date          : {datetime.now():%Y-%m-%d %H:%M:%S}\n\n")
 
+def fprint_cmnt_header(f, title, width=48, indent=0):
+    indent_str = " " * indent
+    line = indent_str + "//" + "=" * width + "\n"
+    f.write(line)
+    f.write(f"{indent_str}// {title}\n")
+    f.write(line)
+
 # Format signal/port width
 def fmt_width(w, vec=False):
     if not w or w <= 0:
@@ -773,10 +788,27 @@ def fmt_width(w, vec=False):
     return f"[{w-1}:0]"
 
 # Print IO port
-def fprint_port(f, direction, width, name, comment="", delim=",", indent=3, pad_width=7):
+def fprint_port(f, direction, width, name, noprefix=False, comment="", delim=",", indent=3, pad_width=7):
     width_str = fmt_width(width)
     indent_str = " " * indent
-    line = f"{indent_str}{direction:<6} logic {width_str:>{pad_width}} {name}"
+    if direction == "output" and not noprefix:
+        prefix = "o_"
+    elif direction == "input" and not noprefix:
+        prefix = "i_"
+    else:
+        prefix = ""
+    line = f"{indent_str}{direction:<6} logic {width_str:>{pad_width}} {prefix}{name}"
+    if delim:
+        line += delim
+    if comment:
+        line += "  // " + comment
+    f.write(line + "\n")
+
+# Print signal
+def fprint_sig(f, dtype, width, name, comment="", delim=";", indent=0, pad_width=7):
+    width_str = fmt_width(width)
+    indent_str = " " * indent
+    line = f"{indent_str}logic {width_str:>{pad_width}} {name}"
     if delim:
         line += delim
     if comment:
@@ -786,13 +818,15 @@ def fprint_port(f, direction, width, name, comment="", delim=",", indent=3, pad_
 # Print HW input/output ports
 def fprint_hw_if_ios(f, direction, hw_if_ports):
     if direction == "input":
-        fname   = "in_ports"
-        fname_w = "in_ports_w"
+        ptype   = "in_ports"
+        ptype_w = "in_ports_w"
         if hw_if_outputs_cnt > 0:
             last_delim = ","
+        else:
+            last_delim = ""
     else:
-        fname = "out_ports"
-        fname_w = "out_ports_w"
+        ptype = "out_ports"
+        ptype_w = "out_ports_w"
         last_delim = ""
 
     # Iterate through register fields and print
@@ -800,10 +834,10 @@ def fprint_hw_if_ios(f, direction, hw_if_ports):
     for reg_name, reg in reg_db.items():
         is_reg_empty = True
         for field_name, field in reg["fields"].items():
-            ports  = field.get(fname, [])
-            widths = field.get(fname_w, [])
+            ports  = field.get(ptype, [])
+            widths = field.get(ptype_w, [])
             for i, port in enumerate(ports):
-                width = widths[i] if i < len(widths) else None
+                width = widths[i] if i < len(widths) else None                
                 # Insert newline BEFORE starting a new reg
                 if is_reg_empty:
                     f.write("\n")
@@ -820,24 +854,25 @@ def fprint_module_ios(f, mdlname):
     global hw_if_inputs_cnt
     global hw_if_outputs_cnt
 
+    # Print Clock, APB IF IOs
     f.write(f"// Module definition\n")
     f.write(f"module {mdlname} (\n")
-    f.write(f"   //========== Clocks & Resets ==========//\n")
-    fprint_port(f, "input", 1, "clk")
-    fprint_port(f, "input", 1, "resetn", comment="Async active-low")  # Only active-low reset is supported
+    fprint_cmnt_header(f, "Clocks & Resets", indent=3)
+    fprint_port(f, "input", 1, "clk", noprefix=True)
+    fprint_port(f, "input", 1, "resetn", comment="Async active-low", noprefix=True)  # Only active-low reset is supported
     f.write(f"\n")
-    f.write(f"   //========== APB Interface ==========//\n")
-    fprint_port(f, "input",  addr_width,  "i_paddr")
-    fprint_port(f, "input",  1, "i_psel")
-    fprint_port(f, "input",  1, "i_penable")
-    fprint_port(f, "input",  1, "i_pwrite")
-    fprint_port(f, "input", REG_WIDTH, "i_pwdata")
-    fprint_port(f, "input", STRB_WIDTH, "i_pstrb")
-    fprint_port(f, "output", REG_WIDTH, "o_prdata")
+    fprint_cmnt_header(f, "APB Interface", indent=3)
+    fprint_port(f, "input",  addr_width,  "paddr")
+    fprint_port(f, "input",  1, "psel")
+    fprint_port(f, "input",  1, "penable")
+    fprint_port(f, "input",  1, "pwrite")
+    fprint_port(f, "input", REG_WIDTH, "pwdata")
+    fprint_port(f, "input", STRB_WIDTH, "pstrb")
+    fprint_port(f, "output", REG_WIDTH, "prdata")
     if hw_if_inputs or hw_if_outputs:
-        fprint_port(f, "output", 1, "o_pready")
+        fprint_port(f, "output", 1, "pready")
         f.write("\n")
-        f.write("   //========== HW Interface ==========//\n")
+        fprint_cmnt_header(f, "HW Interface", indent=3)
         for reg in reg_db.values():
             for field in reg["fields"].values():
                 hw_if_inputs_cnt  += len(field.get("in_ports", []))
@@ -856,7 +891,221 @@ def fprint_module_ios(f, mdlname):
         fprint_hw_if_ios(f, "output", hw_if_outputs_cnt)
 
     # END
-    f.write(f");")
+    f.write(f");\n")
+
+# Print assign statements to HW IF outputs
+def fprint_assign_hw_if_outs(f):
+    if hw_if_outputs:
+        f.write("\n")
+        fprint_cmnt_header(f, "HW Outputs")
+        for reg_name, reg in reg_db.items():
+            is_reg_empty = True
+
+            # Find max port name length for alignment
+            reg_ports = []
+            for field in reg["fields"].values():
+                reg_ports.extend(field.get("out_ports", []))
+            max_len = max((len(port) for port in reg_ports), default=0)
+
+            # Print each port
+            for field_name, field in reg["fields"].items():
+                ports  = field.get("out_ports", [])
+                for i, port in enumerate(ports):
+                    f.write(f"assign o_{port:<{max_len}} = {port};\n")
+                    is_reg_empty = False
+            if is_reg_empty == False:
+                f.write("\n")
+
+# Print address map
+def fprint_addr_map(f):
+    f.write("\n")
+    fprint_cmnt_header(f, "Register Address Map")   
+
+    # Find max reg name length for alignment
+    max_len = 0
+    for reg_name, reg in reg_db.items():
+        name = f"{reg_name.upper()}_ADDR"
+        if len(name) > max_len:
+            max_len = len(name)
+    # Print each register
+    for reg_name, reg in reg_db.items():
+        name = f"{reg_name.upper()}_ADDR"
+        addr = reg['offset']
+        f.write(f"localparam {name:<{max_len}} = {addr_width}'h{addr:X};\n")
+
+# Print APB decoded signals
+def fprint_apb_decd_sig(f):
+    f.write("\n")
+    fprint_cmnt_header(f, "APB decoded signals")
+    fprint_sig(f, "logic", addr_width, "paddr")
+    fprint_sig(f, "logic", REG_WIDTH, "prdata")
+    fprint_sig(f, "logic", 1, "req_rd, req_wr, sw_wren, sw_rden")
+    f.write("\n")
+    f.write(f"localparam ADDR_LSB = $clog2({REG_WIDTH}/8);\n")
+    f.write(f"assign paddr = {{i_paddr[{addr_width-1}:ADDR_LSB], {{ADDR_LSB{{1'b0}}}}}};\n")
+
+# Print APB IF Control FSM
+def fprint_apb_ctrl_fsm(f, indent=0):
+    # Indentation levels
+    ind = " " * indent
+    ind1 = " " * (indent + 3)
+    ind2 = " " * (indent + 6)
+
+    f.write("\n")
+    fprint_cmnt_header(f, "APB IF Control FSM")
+
+    f.write(f"{ind}// FSM states\n")
+    f.write(f"{ind}typedef enum logic [1:0]\n")
+    f.write(f"{ind}{{\n")
+    f.write(f"{ind1}IDLE     = 2'b00,\n")
+    f.write(f"{ind1}W_ACCESS = 2'b01,\n")
+    f.write(f"{ind1}R_ACCESS = 2'b10,\n")
+    f.write(f"{ind1}R_FINISH = 2'b11\n")
+    f.write(f"{ind}}}  state_t;\n")
+
+    f.write(f"{ind}// State register\n")
+    f.write(f"{ind}state_t state_ff;\n\n")
+
+    f.write(f"{ind}// Read/write requests\n")
+    f.write(f"{ind}assign req_rd  = i_psel && ~i_pwrite;\n")
+    f.write(f"{ind}assign req_wr  = i_psel &&  i_pwrite;\n")
+    f.write(f"{ind}assign sw_wren = (state_ff == W_ACCESS) && req_wr && i_penable;\n")
+    f.write(f"{ind}assign sw_rden = (state_ff == R_ACCESS) && req_rd && i_penable;\n\n")
+
+    f.write(f"{ind}// FSM\n")
+    if (RST_TYPE == ASYNC_LOW_RST):
+        f.write(f"{ind}always @(posedge clk or negedge resetn) begin\n")  # Async reset
+    else:
+        f.write(f"{ind}always @(posedge clk) begin\n")  # Sync reset
+    f.write(f"{ind1}// Reset\n")
+    f.write(f"{ind1}if (!resetn) begin\n")
+    f.write(f"{ind2}state_ff <= IDLE;\n")
+    f.write(f"{ind2}o_prdata <= {REG_WIDTH}'h0;\n")
+    f.write(f"{ind2}o_pready <= 1'b0;\n")
+    f.write(f"{ind1}end\n")
+
+    f.write(f"{ind1}// Out of reset\n")
+    f.write(f"{ind1}else begin\n")
+    f.write(f"{ind2}// APB control FSM\n")
+    f.write(f"{ind2}case (state_ff)\n\n")
+
+    # IDLE
+    f.write(f"{ind2}   // Idle State : waits for psel signal and decodes access type\n")
+    f.write(f"{ind2}   IDLE : begin\n")
+    f.write(f"{ind2}      if (req_wr) begin\n")
+    f.write(f"{ind2}         o_pready <= 1'b1;      // Write access has no wait states\n")
+    f.write(f"{ind2}         state_ff <= W_ACCESS;\n")
+    f.write(f"{ind2}      end       \n")
+    f.write(f"{ind2}      else if (req_rd) begin\n")
+    f.write(f"{ind2}         o_pready <= 1'b0;      // Read access has wait states\n")
+    f.write(f"{ind2}         state_ff <= R_ACCESS;\n")
+    f.write(f"{ind2}      end           \n")
+    f.write(f"{ind2}   end\n\n")
+
+    # W_ACCESS
+    f.write(f"{ind2}   // Write Access State : writes addressed-register\n")
+    f.write(f"{ind2}   W_ACCESS : begin\n")
+    f.write(f"{ind2}       o_pready <= 1'b0;\n")
+    f.write(f"{ind2}       state_ff <= IDLE;\n")
+    f.write(f"{ind2}   end\n\n")
+
+    # R_ACCESS
+    f.write(f"{ind2}   // Read Access State : reads addressed-register\n")
+    f.write(f"{ind2}   R_ACCESS : begin\n")
+    f.write(f"{ind2}      o_prdata <= prdata;\n")
+    f.write(f"{ind2}      o_pready <= 1'b1;\n")
+    f.write(f"{ind2}      state_ff <= R_FINISH;\n")
+    f.write(f"{ind2}   end\n\n")
+
+    # R_FINISH
+    f.write(f"{ind2}   // Read Finish state : All read accesses finish here\n")
+    f.write(f"{ind2}   R_FINISH : begin\n")
+    f.write(f"{ind2}      o_pready <= 1'b0;\n")
+    f.write(f"{ind2}      state_ff <= IDLE;\n")
+    f.write(f"{ind2}   end\n\n")
+
+    # Default
+    f.write(f"{ind2}   // Default state\n")
+    f.write(f"{ind2}   default : ;\n\n")
+
+    f.write(f"{ind2}endcase\n")
+    f.write(f"{ind1}end\n")
+    f.write(f"{ind}end\n")
+
+# Print Reg access decode logic
+def fprint_regacc_decd(f):
+    f.write("\n")
+    fprint_cmnt_header(f, "Register access decode logic")
+    for reg_name, reg in reg_db.items():
+        base = reg_name.lower()
+        addr = f"{reg_name.upper()}_ADDR"
+        f.write(f"wire {base}_hit = (paddr == {addr});\n")
+        f.write(f"wire {base}_wr  = {base}_hit && sw_wren;\n")
+        f.write(f"wire {base}_rd  = {base}_hit && sw_rden;\n\n")
+
+# Print Reg fields declaration
+def fprint_reg_fields(f):
+    f.write("\n")
+    fprint_cmnt_header(f, "Register fields")
+
+    # Iterate through each register in the DB
+    for reg_name, reg in reg_db.items():
+        is_reg_empty = True
+        # Iterate through each field in the register
+        for field_name, field in reg["fields"].items():
+            # Extract params of the field
+            fwidth = field["width"]
+            impl   = field["impl"]
+            swevt  = field["swevt"]
+            # Print field if it has a HW implementation
+            if impl != "na":
+                is_reg_empty = False
+                fprint_sig(f, "logic", fwidth, reg_name + "_" + field_name)
+            if swevt != "na":
+                is_reg_empty = False
+                if swevt == "wtrig" or swevt == "rtrig":  # Field wise swevt, width = 1
+                    fprint_sig(f, "logic", 1, reg_name + "_" + field_name + "_" + swevt)
+                elif swevt == "w1trig" or swevt == "w0trig":  # Bitwise swevt, width = fwidth
+                    fprint_sig(f, "logic", fwidth, reg_name + "_" + field_name + "_" + swevt)
+        if is_reg_empty == False:
+                f.write("\n")        
+
+# Print Read data Mux
+def fprint_rdata_mux(f, indent=0):
+    # Indentation levels
+    ind  = " " * indent
+    ind1 = " " * (indent + 3)
+    ind2 = " " * (indent + 6)
+
+    f.write("\n")
+    fprint_cmnt_header(f, "Read Data Mux")
+
+    f.write(f"{ind}always_comb begin\n")
+    f.write(f"{ind1}if (!sw_rden) begin\n")
+    f.write(f"{ind2}prdata = 32'h0; \n")
+    f.write(f"{ind1}end\n")
+    f.write(f"{ind1}else begin\n")
+    f.write(f"{ind2}case (paddr)\n")
+
+    # Find max reg name length for alignment
+    max_len = 0
+    for reg_name, reg in reg_db.items():
+        name = f"{reg_name.upper()}_ADDR"
+        if len(name) > max_len:
+            max_len = len(name)
+    # Assign prdata to each register
+    for reg_name, reg in reg_db.items():
+        addr = f"{reg_name.upper()}_ADDR"
+        bitmap = reg["bitmap"]
+        f.write(f"{ind2}   {addr:<{max_len}} : prdata = {bitmap};\n")
+
+    # Default
+    f.write(f"{ind2}   {'default':<{max_len}} : prdata = 32'h0;\n")
+
+    f.write(f"{ind2}endcase\n")
+    f.write(f"{ind1}end\n")
+    f.write(f"{ind}end\n")
+
 
 #### CONSTANTS ####
 MIN_ADDR_WIDTH = 2
@@ -963,7 +1212,7 @@ VALID_HWSWACC_COMBINATIONS = [
 ############################ Configurable ##################################
 DEBUG_MODE   = 1                # 1 - Enable debug messages
 DEFAULT_DESC = ""               # Default reg/field descriptions
-RST_TYPE     = ASYNC_LOW_RST    # APB reset
+RST_TYPE     = ASYNC_LOW_RST    # APB reset; ASYNC_LOW_RST or SYNC_LOW_RST
 SUFFIX_OFILE = "_apb_top"    # SV file suffix
 EN_BRANDING  = 1  # 0 - to disable RegForge branding in generated SV files
 ############################################################################
@@ -1039,11 +1288,38 @@ def main():
     outfile = f"{mdlname}{SUFFIX_OFILE}.sv"
     try:
         with open(outfile, "w") as f:
+            # Branding
             if EN_BRANDING:
                 f.write(f"// Generated by RegForge //\n")
                 f.write(f"// Try RegForge here - https://github.com/iammituraj/RegForge\n\n")
+
+            # Module begin, ports
             fprint_header(f, mdlname)
             fprint_module_ios(f, mdlname)
+
+            # Address map
+            fprint_addr_map(f)
+
+            # APB decoded signals
+            fprint_apb_decd_sig(f)
+
+            # APB IF Control FSM
+            fprint_apb_ctrl_fsm(f)
+
+            # Reg access decode logic
+            fprint_regacc_decd(f)
+
+            # Reg fields declarations
+            fprint_reg_fields(f)
+
+            # Read data mux
+            fprint_rdata_mux(f)
+
+            # HW outputs
+            fprint_assign_hw_if_outs(f)
+
+            # End module
+            f.write(f"\nendmodule")
     except Exception as e:
         print(f"ERROR: Could not create file: {outfile} successfully :(")
         print(e)
