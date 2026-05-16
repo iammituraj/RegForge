@@ -1,63 +1,150 @@
+// ------------------------------------------------------------------------------------------------
+// ADDR SPACE
+// ------------------------------------------------------------------------------------------------
+// 0x0 - txdata = {24'h0, byte}
+// 0x4 - rxdata = {24'h0, byte}
+// 0x8 - control= {baud_div, 14'h0, rxen, txen}
+// 0xC - status = {30'h0, rx_valid, tx_busy}
+// 0x10- intr   = {22'h0, r_intr_rx_intr_sts, r_intr_tx_intr_sts, 6'h0, rx_intr_en, tx_intr_en}
+// ------------------------------------------------------------------------------------------------
 #START_ADDRSPACE
-addr_width = 16
+mdlname = uart_regblock
+addr_width = 8
 
 #START_REGS
 
-// Error status register
-reg = error_STS
-offset = 0xFFFC
-desc = Error Status Register
+// TXDATA
+reg    = txdata
+offset = 0x00
+desc   = Transmit data register
 
-field = sts_fsm_err0
-idx = [15:0]
-swacc = RW
-hwacc = W
-desc = FSM error status 0
-hwctl=net
-rstval = na
-swevt=na
-
-field = STS_fsm_err0
-idx = [24:17]
+field  = byte
+idx    = [7:0]
 rstval = 0x0
-swacc = RW
-hwacc = RW
-hwctl = net
-swevt = wtrig
+swacc  = rw
+hwacc  = r
+hwctl  = na
+swevt  = wtrig
+desc   = Byte to transmit
 
-field = fsm_err3
-idx =  [16:16]
+// RXDATA
+reg    = rxdata
+desc   = Receive data register
+
+field  = byte
+idx    = [7:0]
 rstval = 0x0
-swacc = RW
-hwacc = na
-hwctl = na
-swevt=w0trig
+swacc  = rclr
+hwacc  = w
+hwctl  = net
+swevt  = rtrig
+desc   = Byte received
 
-field = fsm_err2
-idx =  [31:25]
+// CONTROL
+reg    = control
+desc   = Control register
+
+field  = txen
+idx    = [0:0]
+rstval = 0x1
+swacc  = rw
+swevt  = w1trig
+hwacc  = r
+desc   = Enable transmitter
+
+field  = rxen
+idx    = [1:1]
 rstval = 0x0
-swacc = RW
-hwacc = na
-hwctl = na
-swevt=w0trig
+swacc  = rw
+hwacc  = r
+swevt  = w1trig
+desc   = Enable receiver
 
-// Error control register
-reg = error_ctl
-offset = 0xFFF4
+field  = rsvd
+idx    = [7:2]
+swacc  = na
+hwacc  = na
+desc   = RSVD
 
-field = ctl_fsm_err
-swacc = W
-hwacc = NA
-idx = [7:0]
+field  = baud_div
+idx    = [31:16]
+rstval = 0xFFFF
+swacc  = rw
+hwacc  = r
+desc   = Baud divisor
+
+// STATUS
+reg    = status
+desc   = Status register
+
+field  = tx_busy
+idx    = [0:0]
 rstval = 0x0
-hwctl = set
-swevt=wtrig
+swacc  = r
+hwacc  = w
+hwctl  = net
+desc   = Transmitter busy
 
-// Error set register
-reg = error_sts
-desc = Error Set Register
-field = ctl_fsm_err
-idx = [7:0]
+field  = rx_valid
+idx    = [1:1]
 rstval = 0x0
-swacc = NA
-hwacc = NA
+swacc  = r
+hwacc  = w
+hwctl  = net
+desc   = RX data valid
+
+// INTR
+reg    = intr
+desc   = Interrupt register
+
+field  = tx_intr_en
+idx    = [0:0]
+rstval = 0x0
+swacc  = rw
+hwacc  = r
+desc   = TX interrupt enable
+
+field  = rx_intr_en
+idx    = [1:1]
+rstval = 0x0
+swacc  = rw
+hwacc  = r
+desc   = RX interrupt enable
+
+field  = tx_intr_sts
+idx    = [8:8]
+rstval = 0x0
+swacc  = w1clr
+hwacc  = w
+hwctl  = set
+desc   = TX interrupt status
+
+field  = rx_intr_sts
+idx    = [9:9]
+rstval = 0x0
+swacc  = w1clr
+hwacc  = w
+hwctl  = set
+desc   = RX interrupt status
+
+field  = burn
+idx    = [10:10]
+rstval = 0x0
+swacc  = w
+hwacc  = r
+desc   = burn
+
+field  = intr_clr
+idx    = [15:14]
+rstval = 0x0
+swacc  = w1pul
+hwacc  = r
+hwctl  = na
+desc   = Interrupt clear
+
+field  = ID
+idx    = [31:16]
+rstval = 0xBEEF
+swacc  = r
+hwacc  = na
+desc   = ID

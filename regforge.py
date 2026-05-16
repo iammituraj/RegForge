@@ -14,7 +14,7 @@
 #                    The input is a plain text file (regfile) that describes registers with access rules.
 #                    The output is the register block in RTL (described in SV) with APB interface.
 #
-# Last modified on : Apr-2026
+# Last modified on : May-2026
 # Compatiblility   : Python 3.9 tested
 # Notes            : Usage- regforge.py <regfile>
 #                    eg: regforge.py uart_regs.txt
@@ -572,9 +572,9 @@ def validate_regdb():
                     field["swevt"] = "na"
 
             ## Validate rstval in mandatory cases & override with default value in optional cases ##
-            if swacc == "r" and (hwacc == "w" or hwacc == "rw") and field["hwctl"] == "net": # ROW, RO+
-                field["rstval"] = "na"
-            elif swacc == "r" and (hwacc == "na" or hwacc == "r") and ("rstval" in field and field["rstval"] == "na"):
+            #if swacc == "r" and (hwacc == "w" or hwacc == "rw") and field["hwctl"] == "net": # ROW, RO+
+                #field["rstval"] = "na"  #CHECKME: May be we can mandate this for documentation purpose; should provide reset value from HW side...
+            if swacc == "r" and (hwacc == "na" or hwacc == "r") and ("rstval" in field and field["rstval"] == "na"):  # RO, ROR
                 print(f"ERROR (line {field['lineno']}): Field '{field_name}' in register '{reg_name}' should have a valid reset value at 'rstval'")
                 sys.exit(1)
             elif swacc == "na" or swacc == "na":  # RSVD
@@ -640,9 +640,9 @@ def add_impl_regdb():
                     field["in_ports_w"].append(field["width"])
                 if hwctl != "net":
                     field["in_ports"].append(f"{reg_name}_{field_name}_{hwctl}")
-                    if hwctl == "set" or hwctl == "clr" or hwctl == "tog" or hwctl == "wen":  # Field wise hwctl
+                    if hwctl == "set" or hwctl == "clr" or hwctl == "tog" or hwctl == "wen":  # Field wise hwctl, width = 1
                         field["in_ports_w"].append(1)
-                    else:  # Bitwise hwctl
+                    else:  # Bitwise hwctl; setb, clrb, togb, width = field width
                         field["in_ports_w"].append(field["width"])
 
             # Add HW O/P ports and their widths to the DB
@@ -650,7 +650,7 @@ def add_impl_regdb():
             field["out_ports_w"] = []
             # Only if the field as HW read access or if it's w1pul type, it needs output port to drive HW
             if swacc == "w1pul":
-                field["out_ports"].append(f"{reg_name}_{field_name}")  # Bitwise w1pul
+                field["out_ports"].append(f"{reg_name}_{field_name}")  # Bitwise w1pul, width = field width
                 field["out_ports_w"].append(field["width"])
                 hw_if_outputs = True
             elif hwacc == "r" or hwacc == "rw":
@@ -661,9 +661,9 @@ def add_impl_regdb():
             if swevt != "na":
                 hw_if_outputs = True
                 field["out_ports"].append(f"{reg_name}_{field_name}_{swevt}")
-                if swevt == "wtrig" or swevt == "rtrig":  # Field wise swevt
+                if swevt == "wtrig" or swevt == "rtrig":  # Field wise swevt, width = 1
                     field["out_ports_w"].append(1)
-                elif swevt == "w1trig" or swevt == "w0trig":  # Bitwise swevt
+                elif swevt == "w1trig" or swevt == "w0trig":  # Bitwise swevt, width = field width
                     field["out_ports_w"].append(field["width"])
 
 
@@ -720,7 +720,6 @@ def hex2verhex(val, size):
 
 # Display register database
 def disp_regdb():
-
     # Check if empty
     if not reg_db:
         print("Register database is empty")
@@ -748,7 +747,6 @@ def disp_regdb():
 
 # Display register address table
 def disp_reg_addr_table():
-
     # Check if empty
     if not reg_addr_table:
         print("Register address table is empty")
@@ -808,12 +806,34 @@ def fprint_port(f, direction, width, name, noprefix=False, comment="", delim=","
 def fprint_sig(f, dtype, width, name, comment="", delim=";", indent=0, pad_width=7):
     width_str = fmt_width(width)
     indent_str = " " * indent
-    line = f"{indent_str}logic {width_str:>{pad_width}} {name}"
+    line = f"{indent_str}{dtype} {width_str:>{pad_width}} {name}"
     if delim:
         line += delim
     if comment:
         line += "  // " + comment
     f.write(line + "\n")
+
+# Print signal with assignment
+def fprint_sig_def(f, dtype, width, name, val, comment="", delim=";", indent=0, pad_width=7, name_pad=1):
+    width_str = fmt_width(width)
+    indent_str = " " * indent
+    line = f"{indent_str}{dtype} {width_str:>{pad_width}} {name:<{name_pad}} = {val}"
+    if delim:
+        line += delim
+    if comment:
+        line += "  // " + comment
+    f.write(line + "\n")
+
+# Print reset block
+def fprint_rstblk(f, signame, rstval, indent=0):
+    # Indentation levels
+    ind = " " * indent
+    ind1 = " " * (indent + 3)
+    ind2 = " " * (indent + 6)
+
+    f.write(f"{ind1}if (!resetn) begin\n")
+    f.write(f"{ind2}{signame} <= {rstval};\n")
+    f.write(f"{ind1}end\n")
 
 # Print HW input/output ports
 def fprint_hw_if_ios(f, direction, hw_if_ports):
@@ -973,10 +993,8 @@ def fprint_apb_ctrl_fsm(f, indent=0):
     f.write(f"{ind}assign sw_rden = (state_ff == R_ACCESS) && req_rd && i_penable;\n\n")
 
     f.write(f"{ind}// FSM\n")
-    if (RST_TYPE == ASYNC_LOW_RST):
-        f.write(f"{ind}always @(posedge clk or negedge resetn) begin\n")  # Async reset
-    else:
-        f.write(f"{ind}always @(posedge clk) begin\n")  # Sync reset
+    f.write(f"{ind}{always_ff_begin}\n")
+
     f.write(f"{ind1}// Reset\n")
     f.write(f"{ind1}if (!resetn) begin\n")
     f.write(f"{ind2}state_ff <= IDLE;\n")
@@ -1057,18 +1075,281 @@ def fprint_reg_fields(f):
             fwidth = field["width"]
             impl   = field["impl"]
             swevt  = field["swevt"]
-            # Print field if it has a HW implementation
+            fname  = reg_name + "_" + field_name
+            # Declare the field if it has a HW implementation
             if impl != "na":
                 is_reg_empty = False
-                fprint_sig(f, "logic", fwidth, reg_name + "_" + field_name)
+                fprint_sig(f, "logic", fwidth, fname)
+            # Declare the SWEVT signal, if any...
             if swevt != "na":
                 is_reg_empty = False
                 if swevt == "wtrig" or swevt == "rtrig":  # Field wise swevt, width = 1
-                    fprint_sig(f, "logic", 1, reg_name + "_" + field_name + "_" + swevt)
+                    fprint_sig(f, "logic", 1, fname + "_" + swevt)
                 elif swevt == "w1trig" or swevt == "w0trig":  # Bitwise swevt, width = fwidth
-                    fprint_sig(f, "logic", fwidth, reg_name + "_" + field_name + "_" + swevt)
+                    fprint_sig(f, "logic", fwidth, fname + "_" + swevt)
         if is_reg_empty == False:
                 f.write("\n")        
+
+# Print Reg field read value assignment
+def fprint_reg_fields_readval_assign(f):
+    f.write("\n")
+    fprint_cmnt_header(f, "Register fields read values")
+
+
+    # Iterate through each register in the DB
+    for reg_name, reg in reg_db.items():
+        is_reg_empty = True
+
+        # Find max field name length for alignment
+        reg_fields = [f"r_{reg_name}_{f}" for f in reg["fields"]]
+        max_len = max((len(name) for name in reg_fields), default=0)
+
+        # Iterate through each field in the register
+        for field_name, field in reg["fields"].items():
+            # Extract params of the field
+            fwidth = field["width"]
+            impl   = field["impl"]
+            swacc  = field["swacc"]
+            fname  = reg_name + "_" + field_name
+            # Assign the read value = 0 if RSVD or WO* access type, else read value = field value
+            if impl == "na" or swacc == "w":
+                is_reg_empty = False
+                fprint_sig_def(f, "wire", fwidth, "r" + "_" + fname, str(fwidth) + "'h0", name_pad=max_len)
+            else:
+                is_reg_empty = False
+                fprint_sig_def(f, "wire", fwidth, "r" + "_" + fname, fname, name_pad=max_len)
+        if is_reg_empty == False:
+                f.write("\n")
+
+# Print Reg field write logic and SWEVT generation
+# Assumptions 
+# -- SW writes precedes over HW writes
+# -- W1PUL should be one-cycle pulse always, as SW write cannot happen in consecutive cycles        
+def fprint_reg_fields_wrlogic(f, indent=0):
+    # Indentation levels
+    ind = " " * indent
+    ind1 = " " * (indent + 3)
+    ind2 = " " * (indent + 6)
+
+    f.write("\n")
+    fprint_cmnt_header(f, "Register fields write logic & SWEVT generation")
+
+    # Iterate through each register in the DB
+    for reg_name, reg in reg_db.items():
+        is_reg_empty = True
+        # Iterate through each field in the register
+        for field_name, field in reg["fields"].items():
+            # Flags
+            is_rstval = False
+            is_swacc  = False
+            is_hwacc  = False
+            # Extract params of the field
+            fwidth = field["width"]
+            idx    = field["idx"]
+            msb, lsb = map(int, idx.strip("[]").split(":"))
+            impl   = field["impl"]
+            swevt  = field["swevt"]
+            swacc  = field["swacc"]
+            hwacc  = field["hwacc"]
+            hwctl  = field["hwctl"]
+            rstval = field["rstval"]
+            fname  = reg_name + "_" + field_name
+
+            # RO, ROR, impl = constnet
+            if impl == "constnet":
+                f.write(f"{ind}// {reg_name}->{field_name}\n")
+                f.write(f"{ind}assign {fname} = {rstval};\n\n")
+
+            # ROW, RO+, impl = hwnet
+            elif impl == "hwnet":
+                f.write(f"{ind}// {reg_name}->{field_name}\n")
+                f.write(f"{ind}assign {fname} = i_{fname};\n\n")
+
+            # RW, RWR, RWW, RW+, ROW, RO+, WOR, WO+, W1CLR/SET/PUL/TOG, RCLR, RSET, impl = flop
+            elif impl == "flop":
+                # always_ff block begin
+                f.write(f"{ind}// {reg_name}->{field_name}\n")
+                f.write(f"{ind}{always_ff_begin}\n")
+
+                ## Reset block ##
+                if rstval != "na":
+                    is_rstval = True
+                    f.write(f"{ind1}// Reset\n")
+                    fprint_rstblk(f, fname, rstval)
+
+                ## SW write ##
+                # RW, RWR, RWW, RW+, WOR, WO+, W1CLR/SET/PUL/TOG, RCLR, RSET
+                if swacc == "rw" or swacc == "w" or swacc == "w1clr" or swacc == "w1set" or swacc == "w1pul" or swacc == "w1tog" or swacc == "rclr" or swacc == "rset":
+                    is_swacc = True
+                    # Begin                   
+                    if is_rstval:
+                        if swacc == "rclr" or swacc == "rset":
+                            if swacc == "rclr":
+                                f.write(f"{ind1}// SW Clear on Read\n")
+                            else:
+                                f.write(f"{ind1}// SW Set on Read\n")
+                            f.write(f"{ind1}else if ({reg_name}_rd) begin\n")
+                        else:
+                            f.write(f"{ind1}// SW Write\n") 
+                            f.write(f"{ind1}else if ({reg_name}_wr) begin\n")
+                    else:
+                        if swacc == "rclr" or swacc == "rset":
+                            f.write(f"{ind1}// SW Modify on Read\n") 
+                            f.write(f"{ind1}if ({reg_name}_rd) begin\n")
+                        else:
+                            f.write(f"{ind1}// SW Write\n") 
+                            f.write(f"{ind1}if ({reg_name}_wr) begin\n")
+
+                    # RCLR
+                    if swacc == "rclr":
+                        f.write(f"{ind2}{fname} <= '0;\n")
+                    # RSET
+                    elif swacc == "rset":
+                        f.write(f"{ind2}{fname} <= '1;\n")
+                    # RW, RWR, RWW, RW+, WOR, WO+, W1CLR/SET/PUL/TOG
+                    elif swacc == "rw" or swacc == "w" or swacc == "w1clr" or swacc == "w1set" or swacc == "w1pul" or swacc == "w1tog":   
+                        # PSTRB mapping
+                        pstrb_start = lsb // 8
+                        pstrb_end   = msb // 8
+                        for i in range(pstrb_start, pstrb_end + 1):
+                            byte_lsb = i * 8
+                            byte_msb = i * 8 + 7
+                            slice_lsb = max(lsb, byte_lsb)
+                            slice_msb = min(msb, byte_msb)
+
+                            # Convert to field-local indexing
+                            fld_lsb = slice_lsb - lsb
+                            fld_msb = slice_msb - lsb
+
+                            f.write(f"{ind2}if (i_pstrb[{i}]) ")
+                            if swacc == "rw" or swacc == "w":  # RW, RWR, RWW, RW+, WOR, WO+
+                                f.write(f"{fname}[{fld_msb}:{fld_lsb}] <= i_pwdata[{slice_msb}:{slice_lsb}];\n")
+                            elif swacc == "w1set":  # W1SET
+                                f.write(f"{fname}[{fld_msb}:{fld_lsb}] <= {fname}[{fld_msb}:{fld_lsb}] | i_pwdata[{slice_msb}:{slice_lsb}];\n")
+                            elif swacc == "w1clr":  # W1CLR
+                                f.write(f"{fname}[{fld_msb}:{fld_lsb}] <= {fname}[{fld_msb}:{fld_lsb}] & ~i_pwdata[{slice_msb}:{slice_lsb}];\n")
+                            elif swacc == "w1tog":  # W1TOG
+                                f.write(f"{fname}[{fld_msb}:{fld_lsb}] <= {fname}[{fld_msb}:{fld_lsb}] ^ i_pwdata[{slice_msb}:{slice_lsb}];\n")
+                            elif swacc == "w1pul":  # W1PUL
+                                f.write(f"{fname}[{fld_msb}:{fld_lsb}] <= i_pwdata[{slice_msb}:{slice_lsb}];\n")
+
+                    # End
+                    f.write(f"{ind1}end\n")
+                    if swacc == "w1pul":  # W1PUL
+                        f.write(f"{ind1}// Clear the pulse\n") 
+                        f.write(f"{ind1}else begin\n")
+                        f.write(f"{ind2}{fname} <= '0;\n")
+                        f.write(f"{ind1}end\n")
+
+                ## HW write ##
+                # RWW, RW+, ROW, RO+, WO+, W1CLR/SET/TOG, RCLR, RSET
+                if hwacc == "w" or hwacc == "rw":
+                    is_hwacc = True
+                    # Begin
+                    f.write(f"{ind1}// HW Write\n")
+                    if is_rstval or is_swacc:
+                        f.write(f"{ind1}else begin\n")
+                    # Write
+                    if hwctl == "set":
+                        f.write(f"{ind2}{fname} <= i_{fname}_{hwctl} ? '1 : {fname};\n")
+                    elif hwctl == "clr":
+                        f.write(f"{ind2}{fname} <= i_{fname}_{hwctl} ? '0 : {fname};\n")
+                    elif hwctl == "tog":
+                        f.write(f"{ind2}{fname} <= i_{fname}_{hwctl} ? ~{fname} : {fname};\n")
+                    elif hwctl == "wen":
+                        f.write(f"{ind2}{fname} <= i_{fname}_{hwctl} ? i_{fname} : {fname};\n")
+                    elif hwctl == "net":
+                        f.write(f"{ind2}{fname} <= i_{fname};\n")
+                    elif hwctl == "setb":
+                        f.write(f"{ind2}{fname} <= {fname} | i_{fname}_{hwctl};\n")
+                    elif hwctl == "clrb":
+                        f.write(f"{ind2}{fname} <= {fname} & ~i_{fname}_{hwctl};\n")
+                    elif hwctl == "togb":
+                        f.write(f"{ind2}{fname} <= {fname} ^ i_{fname}_{hwctl};\n")
+                    # End
+                    if is_rstval or is_swacc:
+                        f.write(f"{ind1}end\n")   
+
+                # always_ff block end
+                f.write(f"{ind}end\n\n")
+
+            # WO, impl = na, but has SWEVT
+            #elif impl == "na" and swevt != "na":
+
+            ## SWEVT ##
+            if swevt != "na":
+                # always_ff block begin
+                f.write(f"{ind}// SWEVT: {reg_name}->{field_name}_{swevt}\n")
+                f.write(f"{ind}{always_ff_begin}\n")
+
+                # Reset block
+                f.write(f"{ind1}// Reset\n")
+                if swevt == "wtrig" or swevt == "rtrig":
+                    swevt_rstval = "1'h0"
+                elif swevt == "w1trig" or swevt == "w0trig":
+                    swevt_rstval = str(fwidth) + "'h0"
+                fprint_rstblk(f, fname + "_" + swevt, swevt_rstval)
+
+                # PSTRB mapping
+                pstrb_start = lsb // 8
+                pstrb_end   = msb // 8
+
+                # WTRIG
+                if swevt == "wtrig":
+                    f.write(f"{ind1}// SW Write event pulse\n") 
+                    f.write(f"{ind1}else if ({reg_name}_wr) begin\n")
+                    f.write(f"{ind2}if (|i_pstrb[{pstrb_end}:{pstrb_start}]) ")
+                    f.write(f"{fname}_{swevt} <= 1'h1;\n")
+                    f.write(f"{ind1}end\n")
+                    f.write(f"{ind1}// Clear the SWEVT pulse\n") 
+                    f.write(f"{ind1}else begin\n")
+                    f.write(f"{ind2}{fname}_{swevt} <= 1'h0;\n")
+                    f.write(f"{ind1}end\n")
+                # RTRIG
+                elif swevt == "rtrig":
+                    f.write(f"{ind1}// SW Read event pulse\n") 
+                    f.write(f"{ind1}else if ({reg_name}_rd) begin\n")
+                    f.write(f"{ind2}{fname}_{swevt} <= 1'h1;\n")
+                    f.write(f"{ind1}end\n")
+                    f.write(f"{ind1}// Clear the SWEVT pulse\n") 
+                    f.write(f"{ind1}else begin\n")
+                    f.write(f"{ind2}{fname}_{swevt} <= 1'h0;\n")
+                    f.write(f"{ind1}end\n")
+                # W1TRIG
+                elif swevt == "w1trig":
+                    f.write(f"{ind1}// SW Write 1 event pulse\n") 
+                    f.write(f"{ind1}else if ({reg_name}_wr) begin\n")
+                # W0TRIG
+                elif swevt == "w0trig":
+                    f.write(f"{ind1}// SW Write 0 event pulse\n") 
+                    f.write(f"{ind1}else if ({reg_name}_wr) begin\n")
+
+                # W1/W0TRIG
+                if swevt == "w1trig" or swevt == "w0trig":
+                    for i in range(pstrb_start, pstrb_end + 1):
+                        byte_lsb = i * 8
+                        byte_msb = i * 8 + 7
+                        slice_lsb = max(lsb, byte_lsb)
+                        slice_msb = min(msb, byte_msb)
+
+                        # Convert to field-local indexing
+                        fld_lsb = slice_lsb - lsb
+                        fld_msb = slice_msb - lsb
+
+                        f.write(f"{ind2}if (i_pstrb[{i}]) ")
+                        if swevt == "w1trig":
+                            f.write(f"{fname}_{swevt}[{fld_msb}:{fld_lsb}] <= i_pwdata[{slice_msb}:{slice_lsb}];\n")
+                        else:
+                            f.write(f"{fname}_{swevt}[{fld_msb}:{fld_lsb}] <= ~i_pwdata[{slice_msb}:{slice_lsb}];\n")
+                    f.write(f"{ind1}end\n")
+                    f.write(f"{ind1}// Clear the SWEVT pulse\n") 
+                    f.write(f"{ind1}else begin\n")
+                    f.write(f"{ind2}{fname}_{swevt} <= '0;\n")
+                    f.write(f"{ind1}end\n")
+
+                # always_ff block end
+                f.write(f"{ind}end\n\n")
+
 
 # Print Read data Mux
 def fprint_rdata_mux(f, indent=0):
@@ -1232,9 +1513,18 @@ hw_if_inputs = False
 hw_if_outputs = False
 hw_if_inputs_cnt = 0
 hw_if_outputs_cnt = 0
+always_ff_begin = None
 
 #### MAIN ####
 def main():
+    # Global vars
+    global always_ff_begin
+
+    # Derive always_ff block begin
+    if RST_TYPE == ASYNC_LOW_RST:
+        always_ff_begin = "always_ff @(posedge clk or negedge resetn) begin"  # Async reset
+    else:
+        always_ff_begin = "always_ff @(posedge clk) begin"  # Sync reset
 
     # Check argument count
     if len(sys.argv) != 2:
@@ -1311,6 +1601,12 @@ def main():
 
             # Reg fields declarations
             fprint_reg_fields(f)
+
+            # Reg fields write logic, SWEVT generation
+            fprint_reg_fields_wrlogic(f)
+
+            # Reg fields read value assignment
+            fprint_reg_fields_readval_assign(f)
 
             # Read data mux
             fprint_rdata_mux(f)
