@@ -1,11 +1,14 @@
 // ------------------------------------------------------------------------------------------------
 // ADDR SPACE
 // ------------------------------------------------------------------------------------------------
-// 0x0 - txdata = {24'h0, byte}
-// 0x4 - rxdata = {24'h0, byte}
-// 0x8 - control= {baud_div, 14'h0, rxen, txen}
-// 0xC - status = {30'h0, rx_valid, tx_busy}
-// 0x10- intr   = {22'h0, r_intr_rx_intr_sts, r_intr_tx_intr_sts, 6'h0, rx_intr_en, tx_intr_en}
+// 0x00 - txdata  = {24'h0, byte}
+// 0x04 - rxdata  = {24'h0, byte}
+// 0x08 - control = {baud_div, RSVD, reset, rxen, txen}
+// 0x0C - status  = {30'h0, rx_valid, tx_busy}
+// 0x10 - intr    = {14'h0, rx_intr_sts, tx_intr_sts,
+//                   err_code, err_clr, err,
+//                   rx_intr_en, tx_intr_en}
+// 0x14 - ID      = {ID, 16'h0}
 // ------------------------------------------------------------------------------------------------
 #START_ADDRSPACE
 mdlname = uart_regblock
@@ -48,7 +51,7 @@ field  = txen
 idx    = [0:0]
 rstval = 0x1
 swacc  = rw
-swevt  = w1trig
+swevt  = na
 hwacc  = r
 desc   = Enable transmitter
 
@@ -57,11 +60,18 @@ idx    = [1:1]
 rstval = 0x0
 swacc  = rw
 hwacc  = r
-swevt  = w1trig
+swevt  = na
 desc   = Enable receiver
 
-field  = rsvd
-idx    = [7:2]
+field  = reset
+idx    = [2:2]
+rstval = 0x0
+swacc  = w1pul
+hwacc  = r
+desc   = Reset UART
+
+field  = RSVD
+idx    = [15:3]
 swacc  = na
 hwacc  = na
 desc   = RSVD
@@ -111,8 +121,32 @@ swacc  = rw
 hwacc  = r
 desc   = RX interrupt enable
 
+field  = err
+idx    = [9:8]
+rstval = 0x0
+swacc  = rw
+hwacc  = w
+hwctl  = setb
+desc   = Error
+
+field  = err_clr
+idx    = [11:10]
+rstval = 0x0
+swacc  = w
+hwacc  = na
+swevt  = w1trig
+desc   = Error
+
+field  = err_code
+idx    = [15:12]
+rstval = 0x0
+swacc  = rw
+hwacc  = w
+hwctl  = wen
+desc   = Error code
+
 field  = tx_intr_sts
-idx    = [8:8]
+idx    = [16:16]
 rstval = 0x0
 swacc  = w1clr
 hwacc  = w
@@ -120,27 +154,16 @@ hwctl  = set
 desc   = TX interrupt status
 
 field  = rx_intr_sts
-idx    = [9:9]
+idx    = [17:17]
 rstval = 0x0
 swacc  = w1clr
 hwacc  = w
 hwctl  = set
 desc   = RX interrupt status
 
-field  = burn
-idx    = [10:10]
-rstval = 0x0
-swacc  = w
-hwacc  = r
-desc   = burn
-
-field  = intr_clr
-idx    = [15:14]
-rstval = 0x0
-swacc  = w1pul
-hwacc  = r
-hwctl  = na
-desc   = Interrupt clear
+// INTR
+reg    = ID
+desc   = ID register
 
 field  = ID
 idx    = [31:16]

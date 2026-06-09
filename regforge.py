@@ -14,11 +14,11 @@
 #                    The input is a plain text file (regfile) that describes registers with access rules.
 #                    The output is the register block in RTL (described in SV) with APB interface.
 #
-# Last modified on : May-2026
+# Last modified on : June-2026
 # Compatiblility   : Python 3.9 tested
 # Notes            : Usage- regforge.py <regfile>
 #                    eg: regforge.py uart_regs.txt
-#                        Dumps output file = uart_regs_apb_top.sv
+#                        Dumps output file = uart_regblock_apb_top.sv
 #
 # Documentation    : https://github.com/iammituraj/RegForge/blob/main/README.md
 #
@@ -785,6 +785,13 @@ def fmt_width(w, vec=False):
         return "[0:0]" if vec else ""
     return f"[{w-1}:0]"
 
+# Format index
+def fmt_idx(msb, lsb, isarr=False):
+    if msb == lsb and not isarr:
+        return "" if msb == 0 else f"[{msb}]"
+    else:
+        return f"[{msb}:{lsb}]"
+
 # Print IO port
 def fprint_port(f, direction, width, name, noprefix=False, comment="", delim=",", indent=3, pad_width=7):
     width_str = fmt_width(width)
@@ -803,8 +810,8 @@ def fprint_port(f, direction, width, name, noprefix=False, comment="", delim=","
     f.write(line + "\n")
 
 # Print signal
-def fprint_sig(f, dtype, width, name, comment="", delim=";", indent=0, pad_width=7):
-    width_str = fmt_width(width)
+def fprint_sig(f, dtype, width, name, comment="", delim=";", indent=0, pad_width=7, isvec=False):
+    width_str = fmt_width(width, isvec)
     indent_str = " " * indent
     line = f"{indent_str}{dtype} {width_str:>{pad_width}} {name}"
     if delim:
@@ -827,13 +834,11 @@ def fprint_sig_def(f, dtype, width, name, val, comment="", delim=";", indent=0, 
 # Print reset block
 def fprint_rstblk(f, signame, rstval, indent=0):
     # Indentation levels
-    ind = " " * indent
-    ind1 = " " * (indent + 3)
-    ind2 = " " * (indent + 6)
+    ind = [" " * (0 + i*3) for i in range(5)]
 
-    f.write(f"{ind1}if (!resetn) begin\n")
-    f.write(f"{ind2}{signame} <= {rstval};\n")
-    f.write(f"{ind1}end\n")
+    f.write(f"{ind[indent]}if (!resetn) begin\n")
+    f.write(f"{ind[indent+1]}{signame} <= {rstval};\n")
+    f.write(f"{ind[indent]}end\n")
 
 # Print HW input/output ports
 def fprint_hw_if_ios(f, direction, hw_if_ports):
@@ -1127,9 +1132,14 @@ def fprint_reg_fields_readval_assign(f):
 # -- W1PUL should be one-cycle pulse always, as SW write cannot happen in consecutive cycles        
 def fprint_reg_fields_wrlogic(f, indent=0):
     # Indentation levels
-    ind = " " * indent
+    #ind = " " * indent
     ind1 = " " * (indent + 3)
     ind2 = " " * (indent + 6)
+    ind3 = " " * (indent + 9)
+    ind4 = " " * (indent + 12)
+    ind = [" " * (indent + i*3) for i in range(5)]
+    #inds = [ind, ind1, ind2, ind3, ind4]
+    x = 0  # Current indentation level
 
     f.write("\n")
     fprint_cmnt_header(f, "Register fields write logic & SWEVT generation")
@@ -1143,6 +1153,7 @@ def fprint_reg_fields_wrlogic(f, indent=0):
             is_rstval = False
             is_swacc  = False
             is_hwacc  = False
+            is_hwacc_block_done = False
             # Extract params of the field
             fwidth = field["width"]
             idx    = field["idx"]
@@ -1154,60 +1165,90 @@ def fprint_reg_fields_wrlogic(f, indent=0):
             hwctl  = field["hwctl"]
             rstval = field["rstval"]
             fname  = reg_name + "_" + field_name
+            x = 0
 
             # RO, ROR, impl = constnet
             if impl == "constnet":
-                f.write(f"{ind}// {reg_name}->{field_name}\n")
-                f.write(f"{ind}assign {fname} = {rstval};\n\n")
+                f.write(f"{ind[x]}// {reg_name}->{field_name}\n")
+                f.write(f"{ind[x]}assign {fname} = {rstval};\n\n")
 
             # ROW, RO+, impl = hwnet
             elif impl == "hwnet":
-                f.write(f"{ind}// {reg_name}->{field_name}\n")
-                f.write(f"{ind}assign {fname} = i_{fname};\n\n")
+                f.write(f"{ind[x]}// {reg_name}->{field_name}\n")
+                f.write(f"{ind[x]}assign {fname} = i_{fname};\n\n")
 
             # RW, RWR, RWW, RW+, ROW, RO+, WOR, WO+, W1CLR/SET/PUL/TOG, RCLR, RSET, impl = flop
             elif impl == "flop":
                 # always_ff block begin
-                f.write(f"{ind}// {reg_name}->{field_name}\n")
-                f.write(f"{ind}{always_ff_begin}\n")
+                f.write(f"{ind[x]}// {reg_name}->{field_name}\n")
+                f.write(f"{ind[x]}{always_ff_begin}\n")
 
                 ## Reset block ##
+                # if (rst) begin
+                # end
                 if rstval != "na":
+                    x = 1
                     is_rstval = True
-                    f.write(f"{ind1}// Reset\n")
-                    fprint_rstblk(f, fname, rstval)
+                    f.write(f"{ind[x]}// Reset\n")
+                    fprint_rstblk(f, fname, rstval, indent=x)
 
-                ## SW write ##
+                ## SW write & HW write ##
                 # RW, RWR, RWW, RW+, WOR, WO+, W1CLR/SET/PUL/TOG, RCLR, RSET
                 if swacc == "rw" or swacc == "w" or swacc == "w1clr" or swacc == "w1set" or swacc == "w1pul" or swacc == "w1tog" or swacc == "rclr" or swacc == "rset":
                     is_swacc = True
-                    # Begin                   
+                    is_bitwise_hw_write = False
+                    is_fldwise_hw_write = False
+                    ## Access block begin            
                     if is_rstval:
-                        if swacc == "rclr" or swacc == "rset":
-                            if swacc == "rclr":
-                                f.write(f"{ind1}// SW Clear on Read\n")
-                            else:
-                                f.write(f"{ind1}// SW Set on Read\n")
-                            f.write(f"{ind1}else if ({reg_name}_rd) begin\n")
-                        else:
-                            f.write(f"{ind1}// SW Write\n") 
-                            f.write(f"{ind1}else if ({reg_name}_wr) begin\n")
+                        f.write(f"{ind[x]}else begin\n")
+                        x = 2
                     else:
-                        if swacc == "rclr" or swacc == "rset":
-                            f.write(f"{ind1}// SW Modify on Read\n") 
-                            f.write(f"{ind1}if ({reg_name}_rd) begin\n")
+                        x = 1
+
+                    # RCLR/RSET/SW write comment
+                    if swacc == "rclr" or swacc == "rset":
+                        if swacc == "rclr":
+                            f.write(f"{ind[x]}// SW Clear on Read\n")
                         else:
-                            f.write(f"{ind1}// SW Write\n") 
-                            f.write(f"{ind1}if ({reg_name}_wr) begin\n")
+                            f.write(f"{ind[x]}// SW Set on Read\n")
+                        f.write(f"{ind[x]}if ({reg_name}_rd) begin\n")
+                        x = x + 1
+                    #else:
+                        #f.write(f"{ind[x]}// SW Write\n") 
 
                     # RCLR
                     if swacc == "rclr":
-                        f.write(f"{ind2}{fname} <= '0;\n")
+                        f.write(f"{ind[x]}{fname} <= '0;\n")
+                        x = x - 1
+                        f.write(f"{ind[x]}end\n")
+
                     # RSET
                     elif swacc == "rset":
-                        f.write(f"{ind2}{fname} <= '1;\n")
-                    # RW, RWR, RWW, RW+, WOR, WO+, W1CLR/SET/PUL/TOG
-                    elif swacc == "rw" or swacc == "w" or swacc == "w1clr" or swacc == "w1set" or swacc == "w1pul" or swacc == "w1tog":   
+                        f.write(f"{ind[x]}{fname} <= '1;\n")
+                        x = x - 1
+                        f.write(f"{ind[x]}end\n")
+
+                    # SW write      --> RW, RWR, RWW, RW+, WOR, WO+, W1CLR/SET/PUL/TOG
+                    # SW + HW write --> RWW, RW+, WO+, W1CLR/SET/TOG
+                    elif swacc == "rw" or swacc == "w" or swacc == "w1clr" or swacc == "w1set" or swacc == "w1pul" or swacc == "w1tog": 
+                        # HW write type?
+                        # SETB/CLRB/TOGB bitwise HW write
+                        if (hwacc == "w" or hwacc == "rw") and (hwctl == "setb" or hwctl == "clrb" or hwctl == "togb"):
+                            is_bitwise_hw_write = True
+                        else:
+                            is_bitwise_hw_write = False  
+                        # SET/CLR/WEN/NET fieldwise HW write 
+                        if (hwacc == "w" or hwacc == "rw") and (hwctl == "set" or hwctl == "clr" or hwctl == "tog" or hwctl == "wen" or hwctl == "net"):
+                            is_fldwise_hw_write = True
+                        else:
+                            is_fldwise_hw_write = False
+
+                        # BEGIN: SW write in case there is no bitwise HW write 
+                        if not is_bitwise_hw_write:
+                            f.write(f"{ind[x]}// SW Write\n")
+                            f.write(f"{ind[x]}if ({reg_name}_wr) begin\n")
+                            x = x + 1
+
                         # PSTRB mapping
                         pstrb_start = lsb // 8
                         pstrb_end   = msb // 8
@@ -1216,62 +1257,138 @@ def fprint_reg_fields_wrlogic(f, indent=0):
                             byte_msb = i * 8 + 7
                             slice_lsb = max(lsb, byte_lsb)
                             slice_msb = min(msb, byte_msb)
+                            slice_idx = fmt_idx(slice_msb, slice_lsb, isarr=True)
 
                             # Convert to field-local indexing
                             fld_lsb = slice_lsb - lsb
                             fld_msb = slice_msb - lsb
+                            fld_idx = fmt_idx(fld_msb, fld_lsb)
 
-                            f.write(f"{ind2}if (i_pstrb[{i}]) ")
-                            if swacc == "rw" or swacc == "w":  # RW, RWR, RWW, RW+, WOR, WO+
-                                f.write(f"{fname}[{fld_msb}:{fld_lsb}] <= i_pwdata[{slice_msb}:{slice_lsb}];\n")
+                            # BEGIN: SW write in case there is bitwise HW write
+                            indnt = " "
+                            if is_bitwise_hw_write:
+                                f.write(f"{ind[x]}// SW Write\n")
+                                f.write(f"{ind[x]}if (i_pstrb[{i}] && {reg_name}_wr) begin\n")
+                                x = x + 1
+                                indnt = ind[x]
+                            else:
+                                f.write(f"{ind[x]}if (i_pstrb[{i}])")
+                                indnt = " "
+                            if swacc == "rw" or swacc == "w":  # RW, RWR, RWW, RW+, WOR, WO+                                
+                                f.write(f"{indnt}{fname}{fld_idx} <= i_pwdata{slice_idx};\n")
                             elif swacc == "w1set":  # W1SET
-                                f.write(f"{fname}[{fld_msb}:{fld_lsb}] <= {fname}[{fld_msb}:{fld_lsb}] | i_pwdata[{slice_msb}:{slice_lsb}];\n")
+                                f.write(f"{indnt}{fname}{fld_idx} <= {fname}{fld_idx} | i_pwdata{slice_idx};\n")
                             elif swacc == "w1clr":  # W1CLR
-                                f.write(f"{fname}[{fld_msb}:{fld_lsb}] <= {fname}[{fld_msb}:{fld_lsb}] & ~i_pwdata[{slice_msb}:{slice_lsb}];\n")
+                                f.write(f"{indnt}{fname}{fld_idx} <= {fname}{fld_idx} & ~i_pwdata{slice_idx};\n")
                             elif swacc == "w1tog":  # W1TOG
-                                f.write(f"{fname}[{fld_msb}:{fld_lsb}] <= {fname}[{fld_msb}:{fld_lsb}] ^ i_pwdata[{slice_msb}:{slice_lsb}];\n")
+                                f.write(f"{indnt}{fname}{fld_idx} <= {fname}{fld_idx} ^ i_pwdata{slice_idx};\n")
                             elif swacc == "w1pul":  # W1PUL
-                                f.write(f"{fname}[{fld_msb}:{fld_lsb}] <= i_pwdata[{slice_msb}:{slice_lsb}];\n")
+                                f.write(f"{indnt}{fname}{fld_idx} <= i_pwdata{slice_idx};\n")
 
-                    # End
-                    f.write(f"{ind1}end\n")
+                            # END: SW write in case there is bitwise HW write
+                            if is_bitwise_hw_write:
+                                x = x - 1
+                                f.write(f"{ind[x]}end\n")
+
+                            # HW write: SETB/CLRB/TOGB bitwise HW write
+                            if is_bitwise_hw_write:
+                                f.write(f"{ind[x]}// HW Write\n")
+                                f.write(f"{ind[x]}else begin\n")
+                                x = x + 1
+                                if hwctl == "setb":
+                                    f.write(f"{ind[x]}{fname}{fld_idx} <= {fname}{fld_idx} | i_{fname}_{hwctl}{fld_idx};\n")
+                                elif hwctl == "clrb":
+                                    f.write(f"{ind[x]}{fname}{fld_idx} <= {fname}{fld_idx} & ~i_{fname}_{hwctl}{fld_idx};\n")
+                                elif hwctl == "togb":
+                                    f.write(f"{ind[x]}{fname}{fld_idx} <= {fname}{fld_idx} ^ i_{fname}_{hwctl}{fld_idx};\n") 
+                                x = x - 1                        
+                                f.write(f"{ind[x]}end\n")
+
+                        # END: SW write in case there is no bitwise HW write 
+                        if not is_bitwise_hw_write:
+                            x = x - 1                        
+                            f.write(f"{ind[x]}end\n")
+
+                        # HW write: SET/CLR/WEN/NET fieldwise HW write       
+                        if is_fldwise_hw_write:
+                            f.write(f"{ind[x]}// HW Write\n")
+                            f.write(f"{ind[x]}else begin\n")
+                            x = x + 1
+                            if hwctl == "set":
+                                f.write(f"{ind[x]}{fname} <= i_{fname}_{hwctl} ? '1 : {fname};\n")
+                            elif hwctl == "clr":
+                                f.write(f"{ind[x]}{fname} <= i_{fname}_{hwctl} ? '0 : {fname};\n")
+                            elif hwctl == "tog":
+                                f.write(f"{ind[x]}{fname} <= i_{fname}_{hwctl} ? ~{fname} : {fname};\n")
+                            elif hwctl == "wen":
+                                f.write(f"{ind[x]}{fname} <= i_{fname}_{hwctl} ? i_{fname} : {fname};\n")
+                            elif hwctl == "net":
+                                f.write(f"{ind[x]}{fname} <= i_{fname};\n")
+                            x = x - 1                        
+                            f.write(f"{ind[x]}end\n")
+
+                    # W1PUL clearing
                     if swacc == "w1pul":  # W1PUL
-                        f.write(f"{ind1}// Clear the pulse\n") 
-                        f.write(f"{ind1}else begin\n")
-                        f.write(f"{ind2}{fname} <= '0;\n")
-                        f.write(f"{ind1}end\n")
+                        f.write(f"{ind[x]}// Clear the pulse\n") 
+                        f.write(f"{ind[x]}else begin\n")
+                        x = x + 1
+                        f.write(f"{ind[x]}{fname} <= '0;\n")
+                        x = x - 1
+                        f.write(f"{ind[x]}end\n")
 
-                ## HW write ##
-                # RWW, RW+, ROW, RO+, WO+, W1CLR/SET/TOG, RCLR, RSET
-                if hwacc == "w" or hwacc == "rw":
+                ## HW write of ROW, RO+, RCLR, RSET ##
+                if (hwacc == "w" or hwacc == "rw") and (swacc == "r" or swacc == "rset" or swacc == "rclr"):
                     is_hwacc = True
-                    # Begin
-                    f.write(f"{ind1}// HW Write\n")
-                    if is_rstval or is_swacc:
-                        f.write(f"{ind1}else begin\n")
+                    ## Access block begin    
+                    if is_rstval and is_swacc:
+                        x = 2
+                        f.write(f"{ind[x]}// HW Write\n")
+                        f.write(f"{ind[x]}else begin\n")
+                        x = 3
+                    elif is_rstval or is_swacc:
+                        x = 1
+                        f.write(f"{ind[x]}// HW Write\n")
+                        f.write(f"{ind[x]}else begin\n")
+                        x = 2
+                    else:
+                        x = 1
+                        f.write(f"{ind[x]}// HW Write\n")    
                     # Write
                     if hwctl == "set":
-                        f.write(f"{ind2}{fname} <= i_{fname}_{hwctl} ? '1 : {fname};\n")
+                        f.write(f"{ind[x]}{fname} <= i_{fname}_{hwctl} ? '1 : {fname};\n")
                     elif hwctl == "clr":
-                        f.write(f"{ind2}{fname} <= i_{fname}_{hwctl} ? '0 : {fname};\n")
+                        f.write(f"{ind[x]}{fname} <= i_{fname}_{hwctl} ? '0 : {fname};\n")
                     elif hwctl == "tog":
-                        f.write(f"{ind2}{fname} <= i_{fname}_{hwctl} ? ~{fname} : {fname};\n")
+                        f.write(f"{ind[x]}{fname} <= i_{fname}_{hwctl} ? ~{fname} : {fname};\n")
                     elif hwctl == "wen":
-                        f.write(f"{ind2}{fname} <= i_{fname}_{hwctl} ? i_{fname} : {fname};\n")
+                        f.write(f"{ind[x]}{fname} <= i_{fname}_{hwctl} ? i_{fname} : {fname};\n")
                     elif hwctl == "net":
-                        f.write(f"{ind2}{fname} <= i_{fname};\n")
+                        f.write(f"{ind[x]}{fname} <= i_{fname};\n")
                     elif hwctl == "setb":
-                        f.write(f"{ind2}{fname} <= {fname} | i_{fname}_{hwctl};\n")
+                        f.write(f"{ind[x]}{fname} <= {fname} | i_{fname}_{hwctl};\n")
                     elif hwctl == "clrb":
-                        f.write(f"{ind2}{fname} <= {fname} & ~i_{fname}_{hwctl};\n")
+                        f.write(f"{ind[x]}{fname} <= {fname} & ~i_{fname}_{hwctl};\n")
                     elif hwctl == "togb":
-                        f.write(f"{ind2}{fname} <= {fname} ^ i_{fname}_{hwctl};\n")
-                    # End
-                    if is_rstval or is_swacc:
-                        f.write(f"{ind1}end\n")   
+                        f.write(f"{ind[x]}{fname} <= {fname} ^ i_{fname}_{hwctl};\n")  
+                    ## Access block end
+                    if is_swacc:
+                        x = x - 1
+                        f.write(f"{ind[x]}end\n")
+
+                ## Access block end
+                # if (rst) begin
+                # end
+                # else begin
+                # END <--
+                if is_rstval and (is_swacc or is_hwacc):
+                    x = 1
+                    f.write(f"{ind[x]}end\n")
+                else:
+                    x = 0
 
                 # always_ff block end
-                f.write(f"{ind}end\n\n")
+                x = 0
+                f.write(f"{ind[x]}end\n\n")
 
             # WO, impl = na, but has SWEVT
             #elif impl == "na" and swevt != "na":
@@ -1279,16 +1396,17 @@ def fprint_reg_fields_wrlogic(f, indent=0):
             ## SWEVT ##
             if swevt != "na":
                 # always_ff block begin
-                f.write(f"{ind}// SWEVT: {reg_name}->{field_name}_{swevt}\n")
-                f.write(f"{ind}{always_ff_begin}\n")
+                f.write(f"{ind[x]}// SWEVT: {reg_name}->{field_name}_{swevt}\n")
+                f.write(f"{ind[x]}{always_ff_begin}\n")
+                x = 1
 
                 # Reset block
-                f.write(f"{ind1}// Reset\n")
+                f.write(f"{ind[x]}// Reset\n")
                 if swevt == "wtrig" or swevt == "rtrig":
                     swevt_rstval = "1'h0"
                 elif swevt == "w1trig" or swevt == "w0trig":
                     swevt_rstval = str(fwidth) + "'h0"
-                fprint_rstblk(f, fname + "_" + swevt, swevt_rstval)
+                fprint_rstblk(f, fname + "_" + swevt, swevt_rstval, indent=x)
 
                 # PSTRB mapping
                 pstrb_start = lsb // 8
@@ -1296,33 +1414,43 @@ def fprint_reg_fields_wrlogic(f, indent=0):
 
                 # WTRIG
                 if swevt == "wtrig":
-                    f.write(f"{ind1}// SW Write event pulse\n") 
-                    f.write(f"{ind1}else if ({reg_name}_wr) begin\n")
-                    f.write(f"{ind2}if (|i_pstrb[{pstrb_end}:{pstrb_start}]) ")
+                    f.write(f"{ind[x]}// SW Write event pulse\n") 
+                    f.write(f"{ind[x]}else if ({reg_name}_wr) begin\n")
+                    x = x + 1
+                    f.write(f"{ind[x]}if (|i_pstrb[{pstrb_end}:{pstrb_start}]) ")
                     f.write(f"{fname}_{swevt} <= 1'h1;\n")
-                    f.write(f"{ind1}end\n")
-                    f.write(f"{ind1}// Clear the SWEVT pulse\n") 
-                    f.write(f"{ind1}else begin\n")
-                    f.write(f"{ind2}{fname}_{swevt} <= 1'h0;\n")
-                    f.write(f"{ind1}end\n")
+                    x = x - 1
+                    f.write(f"{ind[x]}end\n")
+                    f.write(f"{ind[x]}// Clear the SWEVT pulse\n") 
+                    f.write(f"{ind[x]}else begin\n")
+                    x = x + 1
+                    f.write(f"{ind[x]}{fname}_{swevt} <= 1'h0;\n")
+                    x = x - 1
+                    f.write(f"{ind[x]}end\n")
                 # RTRIG
                 elif swevt == "rtrig":
-                    f.write(f"{ind1}// SW Read event pulse\n") 
-                    f.write(f"{ind1}else if ({reg_name}_rd) begin\n")
-                    f.write(f"{ind2}{fname}_{swevt} <= 1'h1;\n")
-                    f.write(f"{ind1}end\n")
-                    f.write(f"{ind1}// Clear the SWEVT pulse\n") 
-                    f.write(f"{ind1}else begin\n")
-                    f.write(f"{ind2}{fname}_{swevt} <= 1'h0;\n")
-                    f.write(f"{ind1}end\n")
+                    f.write(f"{ind[x]}// SW Read event pulse\n") 
+                    f.write(f"{ind[x]}else if ({reg_name}_rd) begin\n")
+                    x = x + 1
+                    f.write(f"{ind[x]}{fname}_{swevt} <= 1'h1;\n")
+                    x = x - 1
+                    f.write(f"{ind[x]}end\n")
+                    f.write(f"{ind[x]}// Clear the SWEVT pulse\n") 
+                    f.write(f"{ind[x]}else begin\n")
+                    x = x + 1
+                    f.write(f"{ind[x]}{fname}_{swevt} <= 1'h0;\n")
+                    x = x - 1
+                    f.write(f"{ind[x]}end\n")
                 # W1TRIG
                 elif swevt == "w1trig":
-                    f.write(f"{ind1}// SW Write 1 event pulse\n") 
-                    f.write(f"{ind1}else if ({reg_name}_wr) begin\n")
+                    f.write(f"{ind[x]}// SW Write 1 event pulse\n") 
+                    f.write(f"{ind[x]}else if ({reg_name}_wr) begin\n")
+                    x = x + 1
                 # W0TRIG
                 elif swevt == "w0trig":
-                    f.write(f"{ind1}// SW Write 0 event pulse\n") 
-                    f.write(f"{ind1}else if ({reg_name}_wr) begin\n")
+                    f.write(f"{ind[x]}// SW Write 0 event pulse\n") 
+                    f.write(f"{ind[x]}else if ({reg_name}_wr) begin\n")
+                    x = x + 1
 
                 # W1/W0TRIG
                 if swevt == "w1trig" or swevt == "w0trig":
@@ -1331,25 +1459,30 @@ def fprint_reg_fields_wrlogic(f, indent=0):
                         byte_msb = i * 8 + 7
                         slice_lsb = max(lsb, byte_lsb)
                         slice_msb = min(msb, byte_msb)
+                        slice_idx = fmt_idx(slice_msb, slice_lsb, isarr=True)
 
                         # Convert to field-local indexing
                         fld_lsb = slice_lsb - lsb
                         fld_msb = slice_msb - lsb
+                        fld_idx = fmt_idx(fld_msb, fld_lsb)
 
-                        f.write(f"{ind2}if (i_pstrb[{i}]) ")
+                        f.write(f"{ind[x]}if (i_pstrb[{i}]) ")
                         if swevt == "w1trig":
-                            f.write(f"{fname}_{swevt}[{fld_msb}:{fld_lsb}] <= i_pwdata[{slice_msb}:{slice_lsb}];\n")
+                            f.write(f"{fname}_{swevt}{fld_idx} <= i_pwdata{slice_idx};\n")
                         else:
-                            f.write(f"{fname}_{swevt}[{fld_msb}:{fld_lsb}] <= ~i_pwdata[{slice_msb}:{slice_lsb}];\n")
-                    f.write(f"{ind1}end\n")
-                    f.write(f"{ind1}// Clear the SWEVT pulse\n") 
-                    f.write(f"{ind1}else begin\n")
-                    f.write(f"{ind2}{fname}_{swevt} <= '0;\n")
-                    f.write(f"{ind1}end\n")
+                            f.write(f"{fname}_{swevt}{fld_idx} <= ~i_pwdata{slice_idx};\n")
+                    x = x - 1
+                    f.write(f"{ind[x]}end\n")
+                    f.write(f"{ind[x]}// Clear the SWEVT pulse\n") 
+                    f.write(f"{ind[x]}else begin\n")
+                    x = x + 1
+                    f.write(f"{ind[x]}{fname}_{swevt} <= '0;\n")
+                    x = x - 1
+                    f.write(f"{ind[x]}end\n")
 
                 # always_ff block end
-                f.write(f"{ind}end\n\n")
-
+                x = 0
+                f.write(f"{ind[x]}end\n\n")
 
 # Print Read data Mux
 def fprint_rdata_mux(f, indent=0):
@@ -1494,7 +1627,7 @@ VALID_HWSWACC_COMBINATIONS = [
 DEBUG_MODE   = 1                # 1 - Enable debug messages
 DEFAULT_DESC = ""               # Default reg/field descriptions
 RST_TYPE     = ASYNC_LOW_RST    # APB reset; ASYNC_LOW_RST or SYNC_LOW_RST
-SUFFIX_OFILE = "_apb_top"    # SV file suffix
+SUFFIX_OFILE = "_apb_top"       # SV file suffix
 EN_BRANDING  = 1  # 0 - to disable RegForge branding in generated SV files
 ############################################################################
 
