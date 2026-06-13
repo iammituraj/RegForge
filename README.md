@@ -222,8 +222,7 @@ The field type is determined by the SW and HW access policies set. The following
 | 6  | `ROR`   | `r`     | `r`        | Const Net | `rstval` becomes the constant value driven. |
 | 7  | `ROW`   | `r`     | `w`        | Net/Flop  | Field becomes Net if `hwctl = net`, otherwise Flop. |
 | 8  | `RO+`   | `r`     | `rw`       | Flop      |  |
-| 9  | `WO`    | `w`     | `na`       | -         | Must be used with `swevt` for meaningful application. 
-Read as 0 by SW. |
+| 9  | `WO`    | `w`     | `na`       | -         | Must be used with `swevt` for meaningful application. Read as 0 by SW. |
 | 10 | `WOR`   | `w`     | `r`        | Flop      | Read as 0 by SW. |
 | 11 | `WO+`   | `w`     | `rw`       | Flop      | Read as 0 by SW. |
 | 12 | `RSVD`  | `na`    | `na`       | -         | Read as 0 by SW. |
