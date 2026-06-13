@@ -65,7 +65,6 @@ desc   = Enable receiver
 
 field  = reset
 idx    = [2:2]
-rstval = 0x0
 swacc  = w1pul
 hwacc  = r
 desc   = Reset UART

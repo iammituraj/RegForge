@@ -3,7 +3,7 @@
 
 // Module name   : uart_regblock
 // Description   : Regblock with APB IF
-// Date          : 2026-06-09 22:32:32
+// Date          : 2026-06-12 20:50:00
 
 // Module definition
 module uart_regblock (
